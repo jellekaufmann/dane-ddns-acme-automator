@@ -277,7 +277,7 @@ main() {
     logAndStop "Do not run as root! Stopping"
   fi
   if ! [[ -d certs-ecc ]] || ! [[ -d state ]] || ! [[ -d live-ecc ]] || ! [[ -d certs-rsa ]] || ! [[ -d live-rsa ]]; then
-    logAndStop "Certificate directory/directories missing in $(pwd)"
+    logAndStop "Make sure the directories: certs-ecc state live-ecc certs-rsa live-rsa are present in $(pwd)"
   fi
   for domain in "${domains[@]}"; do
     processDomain "${domain}"
