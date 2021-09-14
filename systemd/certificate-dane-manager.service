@@ -1,0 +1,26 @@
+[Unit]
+Description=Certificate manager
+After=network.target
+
+[Service]
+User=certificatemanagement
+Group=ssl-cert
+
+ExecStart=/usr/local/bin/certmanagement.sh
+WorkingDirectory=/var/lib/certmanagement
+Type=exec
+
+# Hardening
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectControlGroups=true
+
+ReadWritePaths=/var/lib/certmanagement
+
+# Enable if you want to use sudo in the script
+
+#AmbientCapabilities=CAP_SETGID CAP_SETUID
+#SecureBits=keep-caps
