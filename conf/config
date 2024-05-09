@@ -1,8 +1,9 @@
 # -- Configuration
+
 # DH Param file added to fullchain certificates
 readonly dhparamfile="/etc/ssl/certs/ffdhe4096.pem"
 # E-mail address to make automated letsencryopt requests possible.
-readonly email="REQUIRED"
+readonly email="TODO"
 # Domains you want to automatically add letsencrypt and DNS TLSA records.
 readonly domains=("ipoac.nl" "pa5am.nl")
 # Automatically add TLSA records to these subdomains, they have to be a subdomain of partent domains already configured. specify the sub domain in the value field and the parent domain in the value for easy processing >:)

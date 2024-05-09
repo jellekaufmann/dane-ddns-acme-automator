@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-source config
+source conf/config
 
 sig_trap() {
   echo "Signal caught. Stopping now"
@@ -104,7 +104,7 @@ signCert() {
       --config-dir certbot-conf --work-dir certbot-work \
       --logs-dir certbot-log -d "${domain}" -d \*."${domain}" \
       --renew-by-default --agree-tos --csr certs-"${type}"/"${domain}"-"${certnumber}".csr \
-      --dns-rfc2136 --dns-rfc2136-credentials certbot-nsupdate-rfc2136.ini \
+      --dns-rfc2136 --dns-rfc2136-credentials conf/certbot-nsupdate-rfc2136.ini \
       --dns-rfc2136-propagation-seconds 15 \
       --cert-path certs-"${type}"/"${domain}"-"${certnumber}"-cert.pem \
       --chain-path  certs-"${type}"/"${domain}"-"${certnumber}"-chain.pem \
@@ -227,24 +227,24 @@ processDomain() {
       logAndStop "${domain}: Certificate is incomplete! type: ${type} certnumber: ${certnumber}"
     fi
   done
-  # Reboot most services only when the main certificate is replaced (ipoac.nl)
-  if [[ "${domain}" == "${domains[0]}" ]] && [[ "${updatedglobal}" -eq 1 ]]; then
-    # Pas het commando ook aan in sudoers
-    sudo /bin/systemctl restart dovecot postfix asterisk chrony
-  fi
+  # Reboot most services only when the main certificate is replaced
+  #if [[ "${domain}" == "${domains[0]}" ]] && [[ "${updatedglobal}" -eq 1 ]]; then
+    # TODO: Post hook after non-main cert is renewed
+    #sudo /bin/systemctl restart dovecot postfix asterisk chrony
+  #fi
 }
 
 main() {
   local domain
   mkdir -p certs-ecc state live-ecc certs-rsa live-rsa ocsp
-  if ! [[ -f nsupdate-rfc2136.key ]] || ! [[ -f certbot-nsupdate-rfc2136.ini ]]; then
+  if ! [[ -f conf/nsupdate-rfc2136.key ]] || ! [[ -f conf/certbot-nsupdate-rfc2136.ini ]]; then
     logAndStop "Files missing in $(pwd)"
   fi
   for domain in "${domains[@]}"; do
     processDomain "${domain}"
   done
-  # Voor OCSP
-  sudo /bin/systemctl reload dnsdist
+  # TODO: OCSP post-renewal hook
+  #sudo /bin/systemctl reload dnsdist
   # Housekeeping if changes are made to certs
   if [[ "$updatedglobal" -eq 1 ]]; then
     # Generate and add TLSA records to DNS
@@ -258,9 +258,9 @@ main() {
       nsucommand+=$(setTLSARecords www."${domain_name}" "$(generateTLSARecords "${domain_name}")")
     done
     nsucommand+="\nsend\nquit\n"
-    echo -e "$nsucommand" | nsupdate -k nsupdate-rfc2136.key
-    # Pas het commando ook aan in sudoers
-    sudo /bin/systemctl reload apache2
+    echo -e "$nsucommand" | nsupdate -k conf/nsupdate-rfc2136.key
+    # TODO: Add tasks to be performed after cert rotation
+    #sudo /bin/systemctl reload apache2
   else
     echo "No certificates changed."
   fi
