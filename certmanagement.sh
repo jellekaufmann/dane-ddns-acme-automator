@@ -1,24 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -Eeuo pipefail
 
-# -- Configuration
-# E-mail address for letsencrypt
-readonly email="changeme"
-# Domains you want to manage
-readonly domains=("ecorp.com" "notsketchydomain.com")
-# Subdomains you want to manage, they have to be a subdomain of partent domains already configured. Configure the subdomain as key and the parent domain as value
-# This is because sub and parent domains share the same wildcard certificate
-readonly -A subdomains=(["webmail.notsketchydomain.com"]=notsketchydomain.com ["ubersecret-intranet.ecorp.com"]=ecorp.com)
-
-# Authoritative nameservers for your domains, used for sanity checking.
-readonly nameservers=("ns1.ecorp.com." "ns2.ecorp.com.")
-# Recursive nameservers to verify correct delegation as sanity check.
-readonly externalresolvers=("dns.google." "one.one.one.one." "dns9.quad9.net.")
-# Hostname or IP and portnumber of Dynamic DNS server, the shared key is stored in acme.key. This is only used by nsupdate to add TLSA records, certbot has its own configuration file (rfc2136.ini)
-readonly ddnsserver="::1 5300"
-# -- End of configuration
-
-updatedglobal=0
+source config
 
 sig_trap() {
   echo "Signal caught. Stopping now"
@@ -36,7 +19,7 @@ trap "sig_trap" SIGINT SIGTERM
 
 logAndStop() {
   local -r errormsg="${1}"
-  echo "Error! Message: ${errormsg}">&2
+  echo "Error! ${errormsg}">&2
   exit 1
 }
 
@@ -45,30 +28,32 @@ logAndStop() {
 genCert() {
   local -r domain="${1}"
   local -r certnumbers=("${2}" "$((${2}+1))") # Current and next certnumber
+  local -r type="${3}"
   local updated=0
   local certnumber
   for certnumber in "${certnumbers[@]}"; do
-    if ! isKeyAndCSRPresent "${domain}" "${certnumber}"; then
-      echo "##### Generating ECDSA certificate ${certnumber} for ${domain} #####"
-      openssl ecparam -genkey -name secp384r1 | openssl ec -out certs-ecc/"${domain}"-"${certnumber}"-privkey.pem
-      openssl req -new -subj "/CN=${domain}" -utf8 -nodes -sha512 \
-        -key certs-ecc/"${domain}"-"${certnumber}"-privkey.pem \
-        -reqexts SAN \
-        -config <(cat /etc/ssl/openssl.cnf \
-                <(printf "\n[SAN]\nsubjectAltName=DNS:%s,DNS:*.%s" "${domain}" "${domain}")) \
-        -out certs-ecc/"${domain}"-"${certnumber}".csr
-      echo "##### Generating RSA certificate ${certnumber} for ${domain} #####"
-      openssl req -subj "/CN=${domain}" -utf8 -nodes -sha512 \
-        -newkey rsa:4096 \
-        -reqexts SAN \
-        -config <(cat /etc/ssl/openssl.cnf \
-                <(printf "\n[SAN]\nsubjectAltName=DNS:%s,DNS:*.%s" "${domain}" "${domain}")) \
-        -keyout certs-rsa/"${domain}"-"${certnumber}"-privkey.pem \
-        -out certs-rsa/"${domain}"-"${certnumber}".csr 2>/dev/null
+    if ! isKeyAndCSRPresent "${domain}" "${certnumber}" "${type}"; then
+      echo "##### Generating ${type} certificate ${certnumber} for ${domain} #####"
+      if [[ "${type}" == "ecc" ]]; then
+        openssl ecparam -genkey -name secp384r1 | openssl ec -out certs-"${type}"/"${domain}"-"${certnumber}"-privkey.pem
+        openssl req -new -subj "/CN=${domain}" -utf8 -nodes \
+          -key certs-"${type}"/"${domain}"-"${certnumber}"-privkey.pem -reqexts SAN \
+          -config <(cat /etc/ssl/openssl.cnf \
+                  <(printf "\n[SAN]\nsubjectAltName=DNS:%s,DNS:*.%s" "${domain}" "${domain}")) \
+          -out certs-"${type}"/"${domain}"-"${certnumber}".csr
+      elif [[ "${type}" == "rsa" ]]; then
+        openssl req -newkey rsa:4096 -subj "/CN=${domain}" -utf8 -nodes -reqexts SAN \
+          -config <(cat /etc/ssl/openssl.cnf \
+                  <(printf "\n[SAN]\nsubjectAltName=DNS:%s,DNS:*.%s" "${domain}" "${domain}")) \
+          -keyout certs-"${type}"/"${domain}"-"${certnumber}"-privkey.pem \
+          -out certs-"${type}"/"${domain}"-"${certnumber}".csr
+      else
+        logAndStop "${type} is unknown."
+      fi
       updated=1
     fi
   done
-  if [[ "${updated}" -eq 1 ]];then
+  if [[ "${updated}" -eq 1 ]]; then
     return 0
   else
     return 1
@@ -79,10 +64,9 @@ genCert() {
 isKeyAndCSRPresent() {
   local -r domain="${1}"
   local -r certnumber="${2}"
-  if [[ -f certs-ecc/"${domain}"-"${certnumber}"-privkey.pem ]] &&
-  [[ -f certs-ecc/"${domain}"-"${certnumber}".csr ]] &&
-  [[ -f certs-rsa/"${domain}"-"${certnumber}"-privkey.pem ]] &&
-  [[ -f certs-rsa/"${domain}"-"${certnumber}".csr ]]; then
+  local -r type="${3}"
+  if [[ -f certs-"${type}"/"${domain}"-"${certnumber}"-privkey.pem ]] &&
+  [[ -f certs-"${type}"/"${domain}"-"${certnumber}".csr ]]; then
     return 0
   else
     return 1
@@ -93,11 +77,10 @@ isKeyAndCSRPresent() {
 isCertComplete() {
   local -r domain="${1}"
   local -r certnumber="${2}"
-  if isKeyAndCSRPresent "${domain}" "${certnumber}" &&
-  [[ -f certs-ecc/"${domain}"-"${certnumber}"-cert.pem ]] &&
-  [[ -f certs-ecc/"${domain}"-"${certnumber}"-fullchain.pem ]] &&
-  [[ -f certs-rsa/"${domain}"-"${certnumber}"-cert.pem ]] &&
-  [[ -f certs-rsa/"${domain}"-"${certnumber}"-fullchain.pem ]]; then
+  local -r type="${3}"
+  if isKeyAndCSRPresent "${domain}" "${certnumber}" "${type}" &&
+  [[ -f certs-"${type}"/"${domain}"-"${certnumber}"-cert.pem ]] &&
+  [[ -f certs-"${type}"/"${domain}"-"${certnumber}"-fullchain.pem ]]; then
     return 0
   else
     return 1
@@ -108,30 +91,26 @@ isCertComplete() {
 signCert() {
   local -r domain="${1}"
   local -r certnumber="${2}"
-  if isKeyAndCSRPresent "${domain}" "${certnumber}" &&
-  ! isCertComplete "${domain}" "${certnumber}"; then
-    echo "##### Signing RCDSA cert ${certnumber} for domain ${domain} #####"
-    certbot certonly --text --non-interactive --email "${email}" \
+  local -r type="${3}"
+  if isKeyAndCSRPresent "${domain}" "${certnumber}" "${type}" &&
+  ! isCertComplete "${domain}" "${certnumber}" "${type}"; then
+    echo "##### Signing ${type} cert ${certnumber} for domain ${domain} #####"
+    # Remove failed attempt remnants
+    rm -f certs-"${type}"/"${domain}"-"${certnumber}"-cert.pem
+    rm -f certs-"${type}"/"${domain}"-"${certnumber}"-chain.pem
+    rm -f certs-"${type}"/"${domain}"-"${certnumber}"-fullchain.pem
+    certbot certonly --text --non-interactive \
+      --email "${email}" --no-eff-email \
       --config-dir certbot-conf --work-dir certbot-work \
       --logs-dir certbot-log -d "${domain}" -d \*."${domain}" \
-      --renew-by-default --agree-tos --csr certs-ecc/"${domain}"-"${certnumber}".csr \
-      --dns-rfc2136 --dns-rfc2136-credentials rfc2136.ini \
-      --dns-rfc2136-propagation-seconds 30 \
-      --cert-path certs-ecc/"${domain}"-"${certnumber}"-cert.pem \
-      --chain-path  certs-ecc/"${domain}"-"${certnumber}"-chain.pem \
-      --fullchain-path certs-ecc/"${domain}"-"${certnumber}"-fullchain.pem
-    chmod 640 certs-ecc/"${domain}"-"${certnumber}"-privkey.pem
-    echo "##### Signing RCDSA cert ${certnumber} for domain ${domain} #####"
-    certbot certonly --text --non-interactive --email "${email}" \
-      --config-dir certbot-conf --work-dir certbot-work \
-      --logs-dir certbot-log -d "${domain}" -d \*."${domain}" \
-      --renew-by-default --agree-tos --csr certs-rsa/"${domain}"-"${certnumber}".csr \
-      --dns-rfc2136 --dns-rfc2136-credentials rfc2136.ini \
-      --dns-rfc2136-propagation-seconds 30 \
-      --cert-path certs-rsa/"${domain}"-"${certnumber}"-cert.pem \
-      --chain-path  certs-rsa/"${domain}"-"${certnumber}"-chain.pem \
-      --fullchain-path certs-rsa/"${domain}"-"${certnumber}"-fullchain.pem
-    chmod 640 certs-rsa/"${domain}"-"${certnumber}"-privkey.pem
+      --renew-by-default --agree-tos --csr certs-"${type}"/"${domain}"-"${certnumber}".csr \
+      --dns-rfc2136 --dns-rfc2136-credentials certbot-nsupdate-rfc2136.ini \
+      --dns-rfc2136-propagation-seconds 15 \
+      --cert-path certs-"${type}"/"${domain}"-"${certnumber}"-cert.pem \
+      --chain-path  certs-"${type}"/"${domain}"-"${certnumber}"-chain.pem \
+      --fullchain-path certs-"${type}"/"${domain}"-"${certnumber}"-fullchain.pem
+    chmod 640 certs-"${type}"/"${domain}"-"${certnumber}"-privkey.pem
+    cat "${dhparamfile}" >> certs-"${type}"/"${domain}"-"${certnumber}"-fullchain.pem
     return 0
   else
     return 1
@@ -139,7 +118,7 @@ signCert() {
 }
 
 # Generate DANE/TLSA records from current and upcoming keys
-getTLSARecords() {
+generateTLSARecords() {
   local -r domain_cert="${1}"
   local -r -a certnumber=$(getCertnumber "${domain_cert}")
   # The TLSA records that need to be added for each entry
@@ -147,7 +126,7 @@ getTLSARecords() {
   # ECDSA
   mapfile -t -O "${#tlsarecords[@]}" tlsarecords < <(openssl x509 -noout -pubkey -in certs-ecc/"${domain_cert}"-"${certnumber}"-cert.pem 2>/dev/null \
     | openssl ec -pubin -outform DER 2>/dev/null | sha256sum | head -c 64)
-  # Generate next key in advance and publish both to fix DANE key rollover
+  # Generate next key in advance and publish both for key rollover
   mapfile -t -O "${#tlsarecords[@]}" tlsarecords < <(openssl x509 -noout -pubkey -in certs-ecc/"${domain_cert}"-$((certnumber+1)).csr \
     -req -signkey certs-ecc/"${domain_cert}"-$((certnumber+1))-privkey.pem 2>/dev/null | openssl ec -pubin -outform DER 2>/dev/null | sha256sum |  head -c 64)
   # RSA
@@ -175,44 +154,10 @@ setTLSARecords() {
   return 0
 }
 
-# Sanity check to see if zone is really delegated to your authoritative DNS servers
-CheckDomainDelegation() {
-  local -r domain="${1}"
-  local result
-  local counter
-  for externalresolver in "${externalresolvers[@]}"; do
-    counter=0
-    mapfile -t result < <(dig -r -q "${domain}" NS @"${externalresolver}" +short)
-    for nameserver in "${nameservers[@]}"; do
-      if [[ "${result[*]}" =~ ${nameserver} ]]; then
-        counter=$((counter + 1))
-      fi
-    done
-    if [[ "${#result[@]}" -ne "${#nameservers[@]}" ]] ||
-    [[ "${#nameservers[@]}" -ne "${counter}" ]]; then
-      logAndStop "DNS delegation failed for domain: ${domain}, resolver: ${externalresolver}, resolved: ${result[*]}."
-    fi
-  done
-}
-
 # Isn't shell scripting amazing
 isInteger() {
   local -r input="${1}"
   if [[ "${input}" == ?(-)+([[:digit:]]) ]]; then
-    return 0
-  else
-    logAndStop "${input} is not an integer"
-  fi
-}
-
-# Yeah...
-isIntegerBetween() {
-  local -r input="${1}"
-  local -r start="${2}"
-  local -r stop="${3}"
-  if isInteger "${input}" &&
-  [[ "${input}" -ge "${start}" ]] &&
-  [[ "${input}" -le "${stop}" ]]; then
     return 0
   else
     return 1
@@ -224,78 +169,105 @@ getCertnumber() {
   local -r domain="${1}"
   if [[ -e state/"${domain}" ]]; then
     local -r certnumber=$(<state/"${domain}")
-    isInteger "${certnumber}"
-    echo "${certnumber}"
+    if isInteger "${certnumber}"; then
+      echo "${certnumber}"
+    else
+      logAndStop "${domain} certnumber: ${certnumber} is not an integer"
+    fi
   else
     echo 0
   fi
+}
+
+getOCSPStaple() {
+  local -r domain="${1}"
+  local -r certnumber="${2}"
+  local -r type="${3}"
+  ocsptool --ask \
+           --load-issuer certs-"${type}"/"${domain}"-"${certnumber}"-chain.pem \
+           --load-cert certs-"${type}"/"${domain}"-"${certnumber}"-cert.pem \
+           --outfile ocsp/"${type}"-"${domain}".ocsp >/dev/null
 }
 
 processDomain() {
   local -r domain="${1}"
   local updated=0
   local certnumber
-  CheckDomainDelegation "${domain}"
+  local type
+  local -r thirtydays=2592000
   certnumber=$(getCertnumber "${domain}")
-  if isCertComplete "${domain}" "${certnumber}"; then
-    local -r certvaliddaysecdsa=$(echo "(" "$(date -d "$(openssl x509 -in certs-ecc/"${domain}"-"${certnumber}"-cert.pem \
-      -text -noout | grep "Not After" | cut -c 25-)" +%s)" - "$(date -d "now" +%s)" ")" / 3600 | bc)
-    local -r certvaliddaysrsa=$(echo "(" "$(date -d "$(openssl x509 -in certs-rsa/"${domain}"-"${certnumber}"-cert.pem \
-      -text -noout | grep "Not After" | cut -c 25-)" +%s)" - "$(date -d "now" +%s)" ")" / 3600 | bc)
-    isInteger "${certvaliddaysecdsa}"
-    isInteger "${certvaliddaysrsa}"
-    # If there are less than 30 days remaining, renew certificate
-    if [[ "${certvaliddaysecdsa}" -lt 30 ]] || [[ "${certvaliddaysrsa}" -lt 30 ]]; then
+  if isCertComplete "${domain}" "${certnumber}" "rsa" && isCertComplete "${domain}" "${certnumber}" "ecc"; then
+    if ! openssl x509 -enddate -noout -in certs-rsa/"${domain}"-"${certnumber}"-cert.pem -checkend "${thirtydays}" >/dev/null || \
+    ! openssl x509 -enddate -noout -in certs-ecc/"${domain}"-"${certnumber}"-cert.pem -checkend "${thirtydays}" >/dev/null;then
       certnumber=$((certnumber + 1))
-      updated=1
+      echo "${domain}: RSA or ECC cert is valid for <30 days. Renewing both"
     fi
+  else
+    echo "${domain}: RSA or ECC certificate is incomplete, generating and signing new certs"
   fi
-  # Generate current and next certificate
-  genCert "${domain}" "${certnumber}" && updated=1
-  # Sign current certificate
-  signCert "${domain}" "${certnumber}" && updated=1
-  # See if something has changed, certnumber 0 means that the certificate is new
-  if [[ "${updated}" -eq 1 ]]; then
-    echo "${certnumber}" > state/"${domain}"
-    # ECDSA
-    ln -sf ../certs-ecc/"${domain}"-"${certnumber}"-cert.pem live-ecc/"${domain}"-cert.pem
-    ln -sf ../certs-ecc/"${domain}"-"${certnumber}"-chain.pem live-ecc/"${domain}"-chain.pem
-    ln -sf ../certs-ecc/"${domain}"-"${certnumber}"-fullchain.pem live-ecc/"${domain}"-fullchain.pem
-    ln -sf ../certs-ecc/"${domain}"-"${certnumber}"-privkey.pem live-ecc/"${domain}"-privkey.pem
-    # RSA
-    ln -sf ../certs-rsa/"${domain}"-"${certnumber}"-cert.pem live-rsa/"${domain}"-cert.pem
-    ln -sf ../certs-rsa/"${domain}"-"${certnumber}"-chain.pem live-rsa/"${domain}"-chain.pem
-    ln -sf ../certs-rsa/"${domain}"-"${certnumber}"-fullchain.pem live-rsa/"${domain}"-fullchain.pem
-    ln -sf ../certs-rsa/"${domain}"-"${certnumber}"-privkey.pem live-rsa/"${domain}"-privkey.pem
-    updatedglobal=1
+  for type in "ecc" "rsa"; do
+    # Generate current and next certificate
+    genCert "${domain}" "${certnumber}" "${type}" && updated=1
+    # Sign current certificate
+    signCert "${domain}" "${certnumber}" "${type}" && updated=1
+    # See if something has changed, certnumber 0 means that the certificate is new
+    if [[ "${updated}" -eq 1 ]]; then
+      echo "${certnumber}" > state/"${domain}"
+      rm -f ocsp/"${type}"-"${domain}".ocsp
+      ln -sf ../certs-"${type}"/"${domain}"-"${certnumber}"-cert.pem live-"${type}"/"${domain}"-cert.pem
+      ln -sf ../certs-"${type}"/"${domain}"-"${certnumber}"-chain.pem live-"${type}"/"${domain}"-chain.pem
+      ln -sf ../certs-"${type}"/"${domain}"-"${certnumber}"-fullchain.pem live-"${type}"/"${domain}"-fullchain.pem
+      ln -sf ../certs-"${type}"/"${domain}"-"${certnumber}"-privkey.pem live-"${type}"/"${domain}"-privkey.pem
+      updatedglobal=1
+    fi
+    # Always refresh OCSP staple
+    getOCSPStaple "${domain}" "${certnumber}" "${type}"
+    # Verify correctly set up certificates
+    if ! isCertComplete "${domain}" "${certnumber}" "${type}"; then
+      logAndStop "${domain}: Certificate is incomplete! type: ${type} certnumber: ${certnumber}"
+    fi
+  done
+  # Reboot most services only when the main certificate is replaced (ipoac.nl)
+  if [[ "${domain}" == "${domains[0]}" ]] && [[ "${updatedglobal}" -eq 1 ]]; then
+    # Pas het commando ook aan in sudoers
+    sudo /bin/systemctl restart dovecot postfix asterisk chrony
   fi
 }
 
 main() {
   local domain
-  if [[ "$EUID" -eq 0 ]]; then
-    logAndStop "Do not run as root! Stopping"
-  fi
-  if ! [[ -d certs-ecc ]] || ! [[ -d state ]] || ! [[ -d live-ecc ]] || ! [[ -d certs-rsa ]] || ! [[ -d live-rsa ]]; then
-    logAndStop "Make sure the directories: certs-ecc state live-ecc certs-rsa live-rsa are present in $(pwd)"
+  mkdir -p certs-ecc state live-ecc certs-rsa live-rsa ocsp
+  if ! [[ -f nsupdate-rfc2136.key ]] || ! [[ -f certbot-nsupdate-rfc2136.ini ]]; then
+    logAndStop "Files missing in $(pwd)"
   fi
   for domain in "${domains[@]}"; do
     processDomain "${domain}"
   done
+  # Voor OCSP
+  sudo /bin/systemctl reload dnsdist
   # Housekeeping if changes are made to certs
   if [[ "$updatedglobal" -eq 1 ]]; then
-    # Generate and add TLSA/DANE records
-    nsucommand+="server ${ddnsserver}\n"
+    # Generate and add TLSA records to DNS
+    local nsucommand+="server ${ddnsserver}\n"
+
     for subdomain in "${!subdomains[@]}"; do
-      nsucommand+=$(setTLSARecords "${subdomain}" "$(getTLSARecords "${subdomains[${subdomain}]}")")
+      nsucommand+=$(setTLSARecords "${subdomain}" "$(generateTLSARecords "${subdomains[${subdomain}]}")")
     done
     for domain_name in "${domains[@]}"; do
-      nsucommand+=$(setTLSARecords "${domain_name}" "$(getTLSARecords "${domain_name}")")
+      nsucommand+=$(setTLSARecords "${domain_name}" "$(generateTLSARecords "${domain_name}")")
+      nsucommand+=$(setTLSARecords www."${domain_name}" "$(generateTLSARecords "${domain_name}")")
     done
     nsucommand+="\nsend\nquit\n"
-    echo -e "$nsucommand" | nsupdate -k acme.key
-    # It's possible to restart or reload services here since it only runs when there is a new certificate.
+    echo -e "$nsucommand" | nsupdate -k nsupdate-rfc2136.key
+    # Pas het commando ook aan in sudoers
+    sudo /bin/systemctl reload apache2
+  else
+    echo "No certificates changed."
   fi
 }
+
+if [[ "$EUID" -eq 0 ]]; then
+  logAndStop "Do not run as root! Stopping"
+fi
 
 main

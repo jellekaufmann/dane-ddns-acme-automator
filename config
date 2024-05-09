@@ -1,0 +1,13 @@
+# -- Configuration
+# DH Param file added to fullchain certificates
+readonly dhparamfile="/etc/ssl/certs/ffdhe4096.pem"
+# E-mail address to make automated letsencryopt requests possible.
+readonly email="REQUIRED"
+# Domains you want to automatically add letsencrypt and DNS TLSA records.
+readonly domains=("ipoac.nl" "pa5am.nl")
+# Automatically add TLSA records to these subdomains, they have to be a subdomain of partent domains already configured. specify the sub domain in the value field and the parent domain in the value for easy processing >:)
+readonly -A subdomains=(["mta-sts.pa5am.nl"]=pa5am.nl ["mta-sts.ipoac.nl"]=ipoac.nl)
+# Hostname or IP and portnumber of Dynamic DNS server, the shared key is stored in acme.key. This is only used by nsupdate to add TLSA records, certbot has its own configuration file (rfc2136.ini)
+readonly ddnsserver="::1 5300"
+
+# -- End of configuration
